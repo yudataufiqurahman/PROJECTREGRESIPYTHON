@@ -53,78 +53,13 @@ st.set_page_config(
 
 st.markdown(
     """
-/* =========================
-   FORCE WHITE TEXT
-   ========================= */
-
-.stApp,
-.stApp p,
-.stApp span,
-.stApp label,
-.stApp div,
-.stApp h1,
-.stApp h2,
-.stApp h3,
-.stApp h4,
-.stApp h5,
-.stApp h6 {
-  color: #ffffff !important;
-}
-
-/* Markdown */
-[data-testid="stMarkdownContainer"] * {
-  color: #ffffff !important;
-}
-
-/* Sidebar */
-[data-testid="stSidebar"] * {
-  color: #ffffff !important;
-}
-
-/* Metric */
-[data-testid="stMetric"] * {
-  color: #ffffff !important;
-}
-
-/* Selectbox, slider, number input, checkbox */
-[data-testid="stWidgetLabel"] * {
-  color: #ffffff !important;
-}
-
-[data-baseweb="select"] * {
-  color: #ffffff !important;
-}
-
-[data-baseweb="input"] * {
-  color: #ffffff !important;
-}
-
-/* Buttons */
-.stButton button,
-.stButton button * {
-  color: #ffffff !important;
-}
-
-/* Caption */
-.stCaption,
-[data-testid="stCaptionContainer"] * {
-  color: #ffffff !important;
-}
-
-/* Radio / checkbox */
-[data-testid="stRadio"] *,
-[data-testid="stCheckbox"] *,
-[data-testid="stSlider"] * {
-  color: #ffffff !important;
-}
-
 <style>
 :root {
   --bg: #09111f;
   --panel: #111b2d;
   --panel2: #17243a;
-  --text: #ffffff;
-  --muted: #ffffff;
+  --text: #e8eef8;
+  --muted: #91a0b8;
   --accent: #7c6cff;
   --accent2: #29d3c2;
   --border: rgba(255,255,255,.08);
@@ -382,31 +317,41 @@ def analyze_gam(X_train, y_train, splits, exact: bool):
     lams_cv = np.logspace(-3, 3, 10)
 
     if exact and HAS_PYGAM:
-        terms = s(0, n_splines=20)
-        for j in range(1, X_train.shape[1]):
-            terms = terms + s(j, n_splines=20)
-        gam = LinearGAM(terms).gridsearch(X_train, y_train, lam=lams_gcv, progress=False)
-        best_lam_gcv = float(np.ravel(gam.lam)[0])
-        edof = float(gam.statistics_["edof"])
-        pred = gam.predict(X_train)
-        rss = float(np.sum((y_train - pred) ** 2))
-        aicc = compute_aicc(len(y_train), rss, edof)
-        fixed_grid = []
-        for lam in lams_cv:
-            cv_rmse, folds = gam_fixed_cv(X_train, y_train, splits, float(lam), exact=True)
-            fixed_grid.append({"lam": float(lam), "CV_RMSE": cv_rmse, "fold_RMSE": folds})
-        best_cv = min(fixed_grid, key=lambda x: x["CV_RMSE"])
-        return {
-            "engine": "pyGAM (exact notebook mode)",
-            "gcv_model": gam,
-            "best_lam_gcv": best_lam_gcv,
-            "edof": edof,
-            "AICc_GCV": aicc,
-            "gcv_grid": [(float(x), None) for x in lams_gcv],
-            "fallback_transformers": None,
-            "cv_grid": fixed_grid,
-            "best_cv": best_cv,
-        }
+        try:
+            terms = s(0, n_splines=20)
+            for j in range(1, X_train.shape[1]):
+                terms = terms + s(j, n_splines=20)
+            gam = LinearGAM(terms).gridsearch(X_train, y_train, lam=lams_gcv, progress=False)
+            best_lam_gcv = float(np.ravel(gam.lam)[0])
+            edof = float(gam.statistics_["edof"])
+            pred = gam.predict(X_train)
+            rss = float(np.sum((y_train - pred) ** 2))
+            aicc = compute_aicc(len(y_train), rss, edof)
+            fixed_grid = []
+            for lam in lams_cv:
+                cv_rmse, folds = gam_fixed_cv(X_train, y_train, splits, float(lam), exact=True)
+                fixed_grid.append({"lam": float(lam), "CV_RMSE": cv_rmse, "fold_RMSE": folds})
+            best_cv = min(fixed_grid, key=lambda x: x["CV_RMSE"])
+            return {
+                "engine": "pyGAM (exact notebook mode)",
+                "gcv_model": gam,
+                "best_lam_gcv": best_lam_gcv,
+                "edof": edof,
+                "AICc_GCV": aicc,
+                "gcv_grid": [(float(x), None) for x in lams_gcv],
+                "fallback_transformers": None,
+                "cv_grid": fixed_grid,
+                "best_cv": best_cv,
+                "exact_error": None,
+            }
+        except Exception as exc:
+            # pyGAM can import successfully but still fail at runtime when its
+            # sparse-matrix implementation is incompatible with SciPy.
+            # Fall through to the deterministic spline fallback instead of
+            # breaking the entire Streamlit page.
+            exact_error = f"{type(exc).__name__}: {exc}"
+    else:
+        exact_error = None
 
     # Fast, deterministic fallback: additive cubic splines + ridge penalty.
     Z, fallback_transformers = FastSplineGAM.fit_transformer(X_train, n_splines=20)
@@ -446,6 +391,7 @@ def analyze_gam(X_train, y_train, splits, exact: bool):
         "gcv_grid": gcv_rows,
         "cv_grid": fixed_grid,
         "best_cv": best_cv,
+        "exact_error": exact_error if (exact and HAS_PYGAM) else None,
     }
 
 
@@ -633,6 +579,7 @@ def analyze_dataset(df: pd.DataFrame, target: str, seed: int, test_size: float, 
         "seed": seed,
         "cv_folds": cv_folds,
         "gam_engine": gam["engine"],
+        "gam_exact_error": gam.get("exact_error"),
     }
 
 
@@ -742,6 +689,201 @@ def render_sidebar(default_path: Path | None, sheets: Dict[str, pd.DataFrame]):
 
 
 # -----------------------------
+# Analysis Assistant (grounded in current results)
+# -----------------------------
+def _fmt(x, digits=4):
+    try:
+        return f"{float(x):.{digits}f}"
+    except Exception:
+        return str(x)
+
+
+def analysis_assistant_answer(question: str, result=None, sheet_name: str = "", cross=None):
+    """Jawaban rule-based yang hanya mengambil angka/temuan dari hasil analisis aktif."""
+    q = " ".join(str(question).lower().strip().split())
+
+    if not q:
+        return "Silakan masukkan pertanyaan. Saya dapat menjawab berdasarkan hasil AICc, CV_RMSE, parameter model, test RMSE, Test R², atau perbandingan antar-sheet."
+
+    if result is None:
+        return "Belum ada hasil analisis yang aktif. Buka Page 02 atau Page 03 dan jalankan analisis terlebih dahulu."
+
+    candidates = result.get("overall_candidates", pd.DataFrame()).copy()
+    if isinstance(candidates, pd.DataFrame) and not candidates.empty:
+        best_cv = candidates.loc[candidates["CV_RMSE"].astype(float).idxmin()]
+        best_aicc = candidates.loc[candidates["AICc"].astype(float).idxmin()]
+    else:
+        best_cv = result.get("overall_best", {})
+        best_aicc = best_cv
+
+    def model_rows(name):
+        if isinstance(candidates, pd.DataFrame) and not candidates.empty:
+            return candidates[candidates["Model"].astype(str).str.lower() == name.lower()]
+        return pd.DataFrame()
+
+    # Sapaan / bantuan
+    if any(w in q for w in ["halo", "hai", "hello", "hi", "bantuan", "help"]):
+        return (
+            "Saya adalah Analysis Assistant. Saya hanya menggunakan hasil analisis yang sedang aktif.\n\n"
+            "Contoh pertanyaan:\n"
+            "• Model terbaik berdasarkan CV?\n"
+            "• Berapa AICc dan CV_RMSE model terbaik?\n"
+            "• Polynomial memilih degree berapa?\n"
+            "• Berapa alpha dan l1_ratio Elastic Net?\n"
+            "• Apa hasil GAM?\n"
+            "• Apakah AICc dan CV memilih model yang sama?\n"
+            "• Apakah pengacakan mengubah AICc/CV?"
+        )
+
+    # Pertanyaan khusus pengacakan / antar-sheet
+    if any(w in q for w in ["acak", "random", "pengacakan", "shuffle", "sheet"]):
+        if isinstance(cross, pd.DataFrame) and not cross.empty:
+            out = [
+                f"Perbandingan antar-sheet untuk dataset {sheet_name or 'yang sedang aktif'} menunjukkan bahwa nilai AICc/CV dapat berubah antar-sheet.",
+                "Perubahan tersebut bersifat deskriptif karena setiap sheet digunakan dalam split train-test dan pembentukan fold yang dipengaruhi seed/urutan baris.",
+            ]
+            for label, col in [
+                ("Polynomial AICc", "Polynomial_AICc"),
+                ("Polynomial CV_RMSE", "Polynomial_CV_RMSE"),
+                ("Elastic Net AICc", "ElasticNet_AICc"),
+                ("Elastic Net CV_RMSE", "ElasticNet_CV_RMSE"),
+                ("GAM AICc", "GAM_AICc"),
+                ("GAM CV_RMSE", "GAM_CV_RMSE"),
+            ]:
+                vals = pd.to_numeric(cross[col], errors="coerce").dropna()
+                if len(vals) > 1:
+                    out.append(f"{label}: rentang {_fmt(vals.min(), 4)}–{_fmt(vals.max(), 4)}; SD = {_fmt(vals.std(ddof=1), 4)}.")
+            out.append("Lima sheet saja tidak cukup untuk menyatakan perubahan tersebut signifikan secara inferensial; yang dapat disimpulkan di sini adalah besarnya variasi numerik antar-sheet.")
+            return "\n\n".join(out)
+        return "Pada konteks yang sedang aktif belum ada tabel lintas-sheet. Buka Page 03 untuk melihat pengaruh pengacakan berdasarkan lima sheet."
+
+    # Model terbaik / CV
+    if "model terbaik" in q or "terbaik berdasarkan cv" in q or ("terbaik" in q and "cv" in q):
+        return (
+            f"Pada sheet {sheet_name or 'aktif'}, model dengan CV_RMSE terendah adalah **{best_cv['Model']}** "
+            f"dengan {best_cv['Parameter']}. CV_RMSE = {_fmt(best_cv['CV_RMSE'])}, "
+            f"AICc = {_fmt(best_cv['AICc'], 2)}, Test_RMSE = {_fmt(best_cv['Test_RMSE'])}, "
+            f"dan Test R² = {_fmt(best_cv['Test_R2'])}."
+        )
+
+    if "aicc" in q and "cv" in q and any(w in q for w in ["sama", "beda", "berbeda", "perbedaan", "memilih"]):
+        same = str(best_aicc["Model"]) == str(best_cv["Model"]) and str(best_aicc["Parameter"]) == str(best_cv["Parameter"])
+        if same:
+            return f"Pada hasil aktif, pemilihan minimum AICc dan minimum CV_RMSE mengarah pada model/parameter yang sama: {best_cv['Model']} ({best_cv['Parameter']})."
+        return (
+            f"Pemilihan minimum AICc dan minimum CV_RMSE tidak identik. Minimum AICc: {best_aicc['Model']} ({best_aicc['Parameter']}) "
+            f"dengan AICc = {_fmt(best_aicc['AICc'],2)}; minimum CV_RMSE: {best_cv['Model']} ({best_cv['Parameter']}) "
+            f"dengan CV_RMSE = {_fmt(best_cv['CV_RMSE'])}."
+        )
+
+    if "aicc" in q:
+        return (
+            f"Minimum AICc pada hasil aktif adalah **{best_aicc['Model']}**, {best_aicc['Parameter']}, "
+            f"dengan AICc = {_fmt(best_aicc['AICc'], 2)}. Untuk konteks pemilihan keseluruhan, CV_RMSE terendah adalah "
+            f"{best_cv['Model']} dengan {_fmt(best_cv['CV_RMSE'])}."
+        )
+
+    if any(w in q for w in ["cv_rmse", "cv rmse", "cross validation", "cross-validation"]):
+        return (
+            f"CV_RMSE terendah pada hasil aktif adalah **{best_cv['Model']}**, {best_cv['Parameter']}, "
+            f"dengan CV_RMSE = {_fmt(best_cv['CV_RMSE'])}. Nilai Test_RMSE = {_fmt(best_cv['Test_RMSE'])} dan Test R² = {_fmt(best_cv['Test_R2'])}."
+        )
+
+    # Polynomial
+    if "polynomial" in q:
+        rows = model_rows("Polynomial")
+        if not rows.empty:
+            ba = rows.loc[rows["AICc"].astype(float).idxmin()]
+            bc = rows.loc[rows["CV_RMSE"].astype(float).idxmin()]
+            return (
+                f"Polynomial: minimum AICc diperoleh pada {ba['Parameter']} dengan AICc = {_fmt(ba['AICc'],2)}; "
+                f"minimum CV_RMSE diperoleh pada {bc['Parameter']} dengan CV_RMSE = {_fmt(bc['CV_RMSE'])}. "
+                f"Pilihan test pada notebook/dashboard juga tersedia pada tabel hasil model."
+            )
+
+    # Elastic Net
+    if "elastic" in q or "l1_ratio" in q or "alpha" in q:
+        rows = model_rows("Elastic Net")
+        if not rows.empty:
+            ba = rows.loc[rows["AICc"].astype(float).idxmin()]
+            bc = rows.loc[rows["CV_RMSE"].astype(float).idxmin()]
+            return (
+                f"Elastic Net: minimum AICc = {_fmt(ba['AICc'],2)} pada {ba['Parameter']}; "
+                f"minimum CV_RMSE = {_fmt(bc['CV_RMSE'])} pada {bc['Parameter']}."
+            )
+
+    # GAM
+    if "gam" in q or "lambda" in q:
+        gam = result.get("gam", {})
+        return (
+            f"GAM menggunakan engine **{result.get('gam_engine','tidak diketahui')}**. "
+            f"Lambda GCV = {_fmt(gam.get('best_lam_gcv', np.nan), 5)}, "
+            f"effective DoF = {_fmt(gam.get('edof', np.nan), 2)}, "
+            f"lambda CV = {_fmt(result.get('best_lam_cv', np.nan), 5)}."
+        )
+
+    # Test set
+    if any(w in q for w in ["test rmse", "test_r2", "test r2", "r²", "r2"]):
+        return (
+            f"Untuk model dengan CV_RMSE terendah, Test_RMSE = {_fmt(best_cv['Test_RMSE'])} dan "
+            f"Test R² = {_fmt(best_cv['Test_R2'])}. Parameter modelnya: {best_cv['Parameter']}."
+        )
+
+    # Data / setting
+    if any(w in q for w in ["jumlah data", "berapa data", "observasi", "train", "test", "fold", "seed"]):
+        return (
+            f"Konfigurasi hasil aktif: total observasi = {result['n_total']:,}; train = {result['n_train']:,}; "
+            f"test = {result['n_test']:,}; test_size = {result['test_size']:.2f}; "
+            f"CV = {result['cv_folds']}-fold; seed = {result['seed']}."
+        )
+
+    if any(w in q for w in ["kesimpulan", "simpulan", "ringkas", "summary"]):
+        return (
+            f"Ringkasan hasil aktif pada sheet {sheet_name or 'aktif'}: CV_RMSE terendah diperoleh oleh {best_cv['Model']} "
+            f"({best_cv['Parameter']}) sebesar {_fmt(best_cv['CV_RMSE'])}. Minimum AICc diperoleh oleh {best_aicc['Model']} "
+            f"({best_aicc['Parameter']}) sebesar {_fmt(best_aicc['AICc'],2)}. Pada test set model CV terpilih memiliki "
+            f"RMSE {_fmt(best_cv['Test_RMSE'])} dan R² {_fmt(best_cv['Test_R2'])}."
+        )
+
+    return (
+        "Pertanyaan tersebut belum memiliki pola jawaban yang tersedia. Saya dapat menjawab pertanyaan tentang model terbaik, "
+        "AICc, CV_RMSE, Polynomial degree, Elastic Net alpha/l1_ratio, GAM lambda, Test RMSE/R², konfigurasi data, "
+        "atau pengaruh pengacakan antar-sheet."
+    )
+
+
+def render_analysis_assistant(result=None, sheet_name="", cross=None, key_prefix="main"):
+    """UI chatbot ringan; tidak memakai API eksternal/LLM."""
+    state_key = f"assistant_history_{key_prefix}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = []
+
+    st.markdown("<div class='section-title'>🤖 Analysis Assistant</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='note'>Chatbot ini membaca hasil analisis yang sedang aktif. "
+        "Tidak menggunakan API eksternal dan tidak menghasilkan angka di luar hasil model.</div>",
+        unsafe_allow_html=True,
+    )
+
+    for role, message in st.session_state[state_key][-8:]:
+        with st.chat_message(role):
+            st.markdown(message)
+
+    with st.form(f"assistant_form_{key_prefix}", clear_on_submit=True):
+        question = st.text_input(
+            "Tanyakan sesuatu tentang hasil analisis",
+            placeholder="Contoh: model terbaik berdasarkan CV apa?",
+        )
+        submitted = st.form_submit_button("Kirim", type="primary")
+
+    if submitted and question.strip():
+        st.session_state[state_key].append(("user", question.strip()))
+        answer = analysis_assistant_answer(question, result=result, sheet_name=sheet_name, cross=cross)
+        st.session_state[state_key].append(("assistant", answer))
+        st.rerun()
+
+
+# -----------------------------
 # Page 1
 # -----------------------------
 def page_exploration(sheets: Dict[str, pd.DataFrame]):
@@ -838,6 +980,12 @@ def page_analysis(sheets: Dict[str, pd.DataFrame]):
 
     st.markdown(f"<span class='badge'>{result['gam_engine']}</span>", unsafe_allow_html=True)
     st.caption(f"Train = {result['n_train']:,} | Test = {result['n_test']:,} | CV = {result['cv_folds']}-fold | Seed = {result['seed']} | Target = PE")
+    if result.get("gam_exact_error"):
+        st.warning(
+            "pyGAM terdeteksi tetapi gagal dijalankan pada environment saat ini. "
+            "Dashboard otomatis memakai fast spline-GAM agar analisis tetap berjalan. "
+            "Setelah requirements diperbarui ke pyGAM 0.11.x, mode exact notebook dapat digunakan kembali."
+        )
 
     tabs = st.tabs(["Polynomial", "Elastic Net", "GAM"])
 
@@ -902,6 +1050,13 @@ def page_analysis(sheets: Dict[str, pd.DataFrame]):
         fig.add_trace(go.Scatter(x=y_test[sample_idx], y=np.asarray(pred)[sample_idx], mode="markers", marker=dict(size=4, opacity=.42), showlegend=False), row=1, col=j)
     chart_layout(fig, 360)
     st.plotly_chart(fig, use_container_width=True)
+
+
+    render_analysis_assistant(
+        result=result,
+        sheet_name=sheet,
+        key_prefix="page2",
+    )
 
 
 # -----------------------------
@@ -1034,6 +1189,14 @@ def page_evaluation(sheets: Dict[str, pd.DataFrame]):
     st.plotly_chart(fig, use_container_width=True)
 
 
+    render_analysis_assistant(
+        result=r,
+        sheet_name=sheet_pick,
+        cross=cross,
+        key_prefix="page3",
+    )
+
+
 # -----------------------------
 # Page 4
 # -----------------------------
@@ -1115,15 +1278,19 @@ def page_simulation(sheets: Dict[str, pd.DataFrame]):
                 return model.predict(d2.values)
         model_for_line = WrappedEN()
     else:
-        if st.session_state.exact_gam and HAS_PYGAM:
-            model = build_pygam(Xtr.values, ytr.values, lam)
+        use_exact_gam = bool(st.session_state.exact_gam and HAS_PYGAM)
+        if use_exact_gam:
+            try:
+                model = build_pygam(Xtr.values, ytr.values, lam)
+            except Exception:
+                use_exact_gam = False
+                model = FastSplineGAM(lam).fit(Xtr.values, ytr.values)
         else:
             model = FastSplineGAM(lam).fit(Xtr.values, ytr.values)
         pred_tr = model.predict(Xtr.values); pred_te = model.predict(Xte.values)
         edof = float(model.statistics_["edof"] if hasattr(model, "statistics_") else model.edof_)
         rss = float(np.sum((ytr.values - pred_tr) ** 2))
-        aicc = compute_aicc(len(ytr), rss, edof)
-        cv_rmse, _ = gam_fixed_cv(Xtr.values, ytr.values, splits, lam, exact=(st.session_state.exact_gam and HAS_PYGAM))
+        cv_rmse, _ = gam_fixed_cv(Xtr.values, ytr.values, splits, lam, exact=use_exact_gam)
         selected_label = f"lambda={lam:.5g}"
         model_for_line = model
 
