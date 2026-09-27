@@ -53,13 +53,78 @@ st.set_page_config(
 
 st.markdown(
     """
+/* =========================
+   FORCE WHITE TEXT
+   ========================= */
+
+.stApp,
+.stApp p,
+.stApp span,
+.stApp label,
+.stApp div,
+.stApp h1,
+.stApp h2,
+.stApp h3,
+.stApp h4,
+.stApp h5,
+.stApp h6 {
+  color: #ffffff !important;
+}
+
+/* Markdown */
+[data-testid="stMarkdownContainer"] * {
+  color: #ffffff !important;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] * {
+  color: #ffffff !important;
+}
+
+/* Metric */
+[data-testid="stMetric"] * {
+  color: #ffffff !important;
+}
+
+/* Selectbox, slider, number input, checkbox */
+[data-testid="stWidgetLabel"] * {
+  color: #ffffff !important;
+}
+
+[data-baseweb="select"] * {
+  color: #ffffff !important;
+}
+
+[data-baseweb="input"] * {
+  color: #ffffff !important;
+}
+
+/* Buttons */
+.stButton button,
+.stButton button * {
+  color: #ffffff !important;
+}
+
+/* Caption */
+.stCaption,
+[data-testid="stCaptionContainer"] * {
+  color: #ffffff !important;
+}
+
+/* Radio / checkbox */
+[data-testid="stRadio"] *,
+[data-testid="stCheckbox"] *,
+[data-testid="stSlider"] * {
+  color: #ffffff !important;
+}
+
 <style>
 :root {
   --bg: #09111f;
   --panel: #111b2d;
   --panel2: #17243a;
-  --text: #e8eef8;
-  --muted: #91a0b8;
+  --text: #ffffff;
+  --muted: #ffffff;
   --accent: #7c6cff;
   --accent2: #29d3c2;
   --border: rgba(255,255,255,.08);
